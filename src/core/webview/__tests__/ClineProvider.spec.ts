@@ -822,14 +822,16 @@ describe("ClineProvider", () => {
 		expect(mockPostMessage).toHaveBeenCalled()
 	})
 
-	test("autoCondenseContextPercent defaults to 100", async () => {
+	test("autoCondenseContextPercent defaults to 75 (XRoo: condense before model degradation)", async () => {
 		// Mock globalState.get to return undefined for autoCondenseContextPercent
 		;(mockContext.globalState.get as any).mockImplementation((key: string) =>
 			key === "autoCondenseContextPercent" ? undefined : null,
 		)
 
 		const state = await provider.getState()
-		expect(state.autoCondenseContextPercent).toBe(100)
+		// XRoo: changed from 100 to 75 — see DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT
+		// in src/core/context-management/index.ts and FORK-XROO.md.
+		expect(state.autoCondenseContextPercent).toBe(75)
 	})
 
 	test("handles autoCondenseContextPercent message", async () => {

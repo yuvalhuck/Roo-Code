@@ -13,7 +13,13 @@ import {
 	estimateTokenCount,
 	truncateConversation,
 	manageContext,
+	manageContextWithRetry,
 	willManageContext,
+	computeContextUsagePercent,
+	resolveEffectiveCondenseThreshold,
+	ABSOLUTE_MAX_CONDENSE_THRESHOLD,
+	DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT,
+	DEFAULT_CONDENSE_MAX_ATTEMPTS,
 } from "../index"
 
 // Create a mock ApiHandler for testing
@@ -756,9 +762,11 @@ describe("Context Management", () => {
 				.mockResolvedValue(mockSummarizeResponse)
 
 			const modelInfo = createModelInfo(100000, 30000)
-			// Set tokens to be below the allowedTokens threshold but above the percentage threshold
+			// Set tokens to be below the allowedTokens threshold but above the percentage threshold.
+			// XRoo: threshold compares against contextTokens / (contextWindow - reservedTokens),
+			// so 60000 / (100000 - 30000) ≈ 85.7% which is above the 50% threshold.
 			const contextWindow = modelInfo.contextWindow
-			const totalTokens = 60000 // Below allowedTokens but 60% of context window
+			const totalTokens = 60000 // Below allowedTokens; ~85.7% of available input space
 			const messagesWithSmallContent = [
 				...messages.slice(0, -1),
 				{ ...messages[messages.length - 1], content: "" },
@@ -771,7 +779,7 @@ describe("Context Management", () => {
 				maxTokens: modelInfo.maxTokens,
 				apiHandler: mockApiHandler,
 				autoCondenseContext: true,
-				autoCondenseContextPercent: 50, // Set threshold to 50% - our tokens are at 60%
+				autoCondenseContextPercent: 50, // Threshold 50% - our usage is ~85.7%
 				systemPrompt: "System prompt",
 				taskId,
 				profileThresholds: {},
@@ -805,9 +813,11 @@ describe("Context Management", () => {
 			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation")
 
 			const modelInfo = createModelInfo(100000, 30000)
-			// Set tokens to be below both the allowedTokens threshold and the percentage threshold
+			// Set tokens to be below both the allowedTokens threshold and the percentage threshold.
+			// XRoo: threshold compares against contextTokens / (contextWindow - reservedTokens),
+			// so 20000 / (100000 - 30000) ≈ 28.6%, comfortably below the 50% threshold.
 			const contextWindow = modelInfo.contextWindow
-			const totalTokens = 40000 // 40% of context window
+			const totalTokens = 20000 // ~28.6% of available input space
 			const messagesWithSmallContent = [
 				...messages.slice(0, -1),
 				{ ...messages[messages.length - 1], content: "" },
@@ -820,7 +830,7 @@ describe("Context Management", () => {
 				maxTokens: modelInfo.maxTokens,
 				apiHandler: mockApiHandler,
 				autoCondenseContext: true,
-				autoCondenseContextPercent: 50, // Set threshold to 50% - our tokens are at 40%
+				autoCondenseContextPercent: 50, // Threshold 50% - our usage is ~28.6%
 				systemPrompt: "System prompt",
 				taskId,
 				profileThresholds: {},
@@ -1082,8 +1092,10 @@ describe("Context Management", () => {
 			const currentProfileId = "test-profile"
 			const contextWindow = modelInfo.contextWindow
 
-			// Set tokens to 65% of context window - above profile threshold (60%) but below global default (100%)
-			const totalTokens = Math.floor(contextWindow * 0.65) // 65000 tokens
+			// XRoo: usage is computed against (contextWindow - reservedTokens) = 70000.
+			// 45000 / 70000 ≈ 64.3% — above the 60% profile threshold but below the
+			// 80% global threshold used below, so we can confirm the *profile* threshold won.
+			const totalTokens = 45000
 
 			// Create messages with very small content in the last one to avoid token overflow
 			const messagesWithSmallContent = [
@@ -1116,14 +1128,14 @@ describe("Context Management", () => {
 				maxTokens: modelInfo.maxTokens,
 				apiHandler: mockApiHandler,
 				autoCondenseContext: true,
-				autoCondenseContextPercent: 100, // Global threshold of 100%
+				autoCondenseContextPercent: 80, // Global threshold 80% (would NOT trigger at 64.3%)
 				systemPrompt: "System prompt",
 				taskId,
 				profileThresholds,
 				currentProfileId,
 			})
 
-			// Should use summarization because 65% > 60% (profile threshold)
+			// Should use summarization because ~64.3% > 60% (profile threshold)
 			expect(summarizeSpy).toHaveBeenCalled()
 			expect(result).toMatchObject({
 				messages: mockSummarizeResponse.messages,
@@ -1148,8 +1160,9 @@ describe("Context Management", () => {
 			const currentProfileId = "test-profile"
 			const contextWindow = modelInfo.contextWindow
 
-			// Set tokens to 80% of context window - above global threshold (75%) but would be below if profile had its own
-			const totalTokens = Math.floor(contextWindow * 0.8) // 80000 tokens
+			// XRoo: usage is computed against (contextWindow - reservedTokens) = 70000.
+			// 56000 / 70000 = 80% — above global 75% threshold (confirming global was used).
+			const totalTokens = 56000
 
 			// Create messages with very small content in the last one to avoid token overflow
 			const messagesWithSmallContent = [
@@ -1190,6 +1203,7 @@ describe("Context Management", () => {
 			})
 
 			// Should use summarization because 80% > 75% (global threshold, since profile is -1)
+			// (proves the -1 sentinel correctly delegated to the global setting)
 			expect(summarizeSpy).toHaveBeenCalled()
 			expect(result).toMatchObject({
 				messages: mockSummarizeResponse.messages,
@@ -1214,10 +1228,10 @@ describe("Context Management", () => {
 			const currentProfileId = "test-profile" // This profile is not in profileThresholds
 			const contextWindow = modelInfo.contextWindow
 
-			// Calculate allowedTokens: contextWindow * (1 - TOKEN_BUFFER_PERCENTAGE) - reservedTokens
+			// XRoo: usage is computed against (contextWindow - reservedTokens) = 70000.
 			// allowedTokens = 100000 * 0.9 - 30000 = 60000
-			// Set tokens to be below both the global threshold (80%) and allowedTokens
-			const totalTokens = 50000 // 50% of context window, well below 60000 allowedTokens and 80% threshold
+			// 30000 / 70000 ≈ 42.9% — below the 80% global threshold and below allowedTokens.
+			const totalTokens = 30000
 
 			// Create messages with very small content in the last one to avoid token overflow
 			const messagesWithSmallContent = [
@@ -1243,8 +1257,8 @@ describe("Context Management", () => {
 				currentProfileId,
 			})
 
-			// Should NOT use summarization because 50% < 80% (global threshold, since profile has no specific threshold)
-			// and totalTokens (50000) < allowedTokens (60000)
+			// Should NOT use summarization because ~42.9% < 80% (global threshold)
+			// and totalTokens (30000) < allowedTokens (60000)
 			expect(summarizeSpy).not.toHaveBeenCalled()
 			expect(result).toEqual({
 				messages: messagesWithSmallContent,
@@ -1488,12 +1502,13 @@ describe("Context Management", () => {
 	 */
 	describe("willManageContext", () => {
 		it("should return true when context percent exceeds threshold", () => {
+			// XRoo: usage = 60000 / (100000 - 30000) ≈ 85.7% > 50% threshold
 			const result = willManageContext({
 				totalTokens: 60000,
-				contextWindow: 100000, // 60% of context window
+				contextWindow: 100000,
 				maxTokens: 30000,
 				autoCondenseContext: true,
-				autoCondenseContextPercent: 50, // 50% threshold
+				autoCondenseContextPercent: 50,
 				profileThresholds: {},
 				currentProfileId: "default",
 				lastMessageTokens: 0,
@@ -1502,12 +1517,13 @@ describe("Context Management", () => {
 		})
 
 		it("should return false when context percent is below threshold", () => {
+			// XRoo: usage = 20000 / (100000 - 30000) ≈ 28.6% < 50% threshold
 			const result = willManageContext({
-				totalTokens: 40000,
-				contextWindow: 100000, // 40% of context window
+				totalTokens: 20000,
+				contextWindow: 100000,
 				maxTokens: 30000,
 				autoCondenseContext: true,
-				autoCondenseContextPercent: 50, // 50% threshold
+				autoCondenseContextPercent: 50,
 				profileThresholds: {},
 				currentProfileId: "default",
 				lastMessageTokens: 0,
@@ -1546,24 +1562,26 @@ describe("Context Management", () => {
 		})
 
 		it("should use profile-specific threshold when available", () => {
+			// XRoo: usage = 40000 / (100000 - 30000) ≈ 57.1% > 50% (profile) but < 80% (global)
 			const result = willManageContext({
-				totalTokens: 55000,
-				contextWindow: 100000, // 55% of context window
+				totalTokens: 40000,
+				contextWindow: 100000,
 				maxTokens: 30000,
 				autoCondenseContext: true,
-				autoCondenseContextPercent: 80, // Global threshold 80%
-				profileThresholds: { "test-profile": 50 }, // Profile threshold 50%
+				autoCondenseContextPercent: 80, // Global threshold 80% (would NOT trigger)
+				profileThresholds: { "test-profile": 50 }, // Profile threshold 50% (DOES trigger)
 				currentProfileId: "test-profile",
 				lastMessageTokens: 0,
 			})
-			// Should trigger because 55% > 50% (profile threshold)
+			// Should trigger because ~57.1% > 50% (profile threshold)
 			expect(result).toBe(true)
 		})
 
 		it("should fall back to global threshold when profile threshold is -1", () => {
+			// XRoo: usage = 40000 / (100000 - 30000) ≈ 57.1% < 80% global threshold
 			const result = willManageContext({
-				totalTokens: 55000,
-				contextWindow: 100000, // 55% of context window
+				totalTokens: 40000,
+				contextWindow: 100000,
 				maxTokens: 30000,
 				autoCondenseContext: true,
 				autoCondenseContextPercent: 80, // Global threshold 80%
@@ -1571,15 +1589,16 @@ describe("Context Management", () => {
 				currentProfileId: "test-profile",
 				lastMessageTokens: 0,
 			})
-			// Should NOT trigger because 55% < 80% (global threshold)
+			// Should NOT trigger because ~57.1% < 80% (global threshold)
 			expect(result).toBe(false)
 		})
 
 		it("should include lastMessageTokens in the calculation", () => {
-			// Without lastMessageTokens: 49000 tokens = 49%
-			// With lastMessageTokens: 49000 + 2000 = 51000 tokens = 51%
+			// XRoo: usage denominator = 100000 - 30000 = 70000
+			// Without lastMessageTokens: 34000 / 70000 ≈ 48.6% < 50% threshold
+			// With lastMessageTokens:    35400 / 70000 ≈ 50.6% > 50% threshold
 			const resultWithoutLastMessage = willManageContext({
-				totalTokens: 49000,
+				totalTokens: 34000,
 				contextWindow: 100000,
 				maxTokens: 30000,
 				autoCondenseContext: true,
@@ -1591,14 +1610,14 @@ describe("Context Management", () => {
 			expect(resultWithoutLastMessage).toBe(false)
 
 			const resultWithLastMessage = willManageContext({
-				totalTokens: 49000,
+				totalTokens: 34000,
 				contextWindow: 100000,
 				maxTokens: 30000,
 				autoCondenseContext: true,
 				autoCondenseContextPercent: 50, // 50% threshold
 				profileThresholds: {},
 				currentProfileId: "default",
-				lastMessageTokens: 2000, // Pushes total to 51%
+				lastMessageTokens: 1400, // Pushes total just past 50%
 			})
 			expect(resultWithLastMessage).toBe(true)
 		})
@@ -1694,6 +1713,407 @@ describe("Context Management", () => {
 			// a significant fraction of prevContextTokens after 50% truncation
 			// With system prompt included, we expect roughly 50% of the messages remaining
 			expect(result.newContextTokensAfterTruncation).toBeGreaterThan(0)
+		})
+	})
+
+	/**
+	 * XRoo: tests for the new helpers that align the trigger math with the UI
+	 * percentage and enforce the "100% is the black line" clamp.
+	 */
+	describe("XRoo: computeContextUsagePercent", () => {
+		it("uses (contextWindow - reservedTokens) as the denominator", () => {
+			// 60000 / (100000 - 30000) = 60000 / 70000 ≈ 85.71%
+			expect(computeContextUsagePercent(60000, 100000, 30000)).toBeCloseTo(85.7143, 3)
+		})
+
+		it("returns 0 when reservedTokens >= contextWindow (misconfigured model)", () => {
+			expect(computeContextUsagePercent(1000, 50000, 60000)).toBe(0)
+			expect(computeContextUsagePercent(1000, 50000, 50000)).toBe(0)
+		})
+
+		it("can return values above 100 when the conversation overflows available input space", () => {
+			// The helper itself does NOT clamp - it just reports the true usage.
+			// Clamping happens on the threshold side via resolveEffectiveCondenseThreshold.
+			// 80000 / (100000 - 30000) ≈ 114.3%
+			expect(computeContextUsagePercent(80000, 100000, 30000)).toBeCloseTo(114.2857, 3)
+		})
+	})
+
+	describe("XRoo: resolveEffectiveCondenseThreshold", () => {
+		it("returns the global threshold when no profile override is set", () => {
+			expect(resolveEffectiveCondenseThreshold(75, {}, "default")).toBe(75)
+		})
+
+		it("returns the profile threshold when set to a valid value", () => {
+			expect(resolveEffectiveCondenseThreshold(75, { "test-profile": 60 }, "test-profile")).toBe(60)
+		})
+
+		it("falls back to the global threshold when the profile value is -1 (inherit)", () => {
+			expect(resolveEffectiveCondenseThreshold(75, { "test-profile": -1 }, "test-profile")).toBe(75)
+		})
+
+		it("ignores invalid profile values and falls back to the global threshold", () => {
+			// Below MIN_CONDENSE_THRESHOLD
+			expect(resolveEffectiveCondenseThreshold(75, { "test-profile": 2 }, "test-profile")).toBe(75)
+			// Above MAX_CONDENSE_THRESHOLD
+			expect(resolveEffectiveCondenseThreshold(75, { "test-profile": 999 }, "test-profile")).toBe(75)
+		})
+
+		it("clamps the global threshold to ABSOLUTE_MAX_CONDENSE_THRESHOLD (100)", () => {
+			// XRoo: even if a stale config has a value above 100, the effective
+			// threshold is clamped to 100. This is the "100% is the black line" rule.
+			expect(resolveEffectiveCondenseThreshold(150, {}, "default")).toBe(ABSOLUTE_MAX_CONDENSE_THRESHOLD)
+			expect(resolveEffectiveCondenseThreshold(101, {}, "default")).toBe(ABSOLUTE_MAX_CONDENSE_THRESHOLD)
+		})
+	})
+
+	describe("XRoo: constants", () => {
+		it("ABSOLUTE_MAX_CONDENSE_THRESHOLD equals 100 (the human-intuitive ceiling)", () => {
+			expect(ABSOLUTE_MAX_CONDENSE_THRESHOLD).toBe(100)
+		})
+
+		it("DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT defaults to 75 (condense before degradation cliff)", () => {
+			expect(DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT).toBe(75)
+		})
+	})
+
+	describe("XRoo: regression - high-context bug from FORK-XROO.md", () => {
+		it("triggers condensing when usage is around 90% (previously did NOT trigger)", () => {
+			// Repro of the original bug: with the old `totalTokens / contextWindow`
+			// math and a default threshold of 100, the conversation could sit at
+			// ~90% of available input space and still not trigger condensing.
+			// With the new math + default 75, this MUST trigger.
+			const result = willManageContext({
+				totalTokens: 63000, // 63000 / (100000 - 30000) = 90%
+				contextWindow: 100000,
+				maxTokens: 30000,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT, // 75
+				profileThresholds: {},
+				currentProfileId: "default",
+				lastMessageTokens: 0,
+			})
+			expect(result).toBe(true)
+		})
+
+		it("triggers condensing when usage exceeds 100% even if the stored threshold is 100", async () => {
+			// Repro of the "170% indicator with no clean" bug. Under the OLD math:
+			//   90000 / 100000 = 90% < 100 → no trigger
+			// Under the NEW math (UI denominator + 100 clamp):
+			//   90000 / (100000 - 30000) ≈ 128.6% > 100 → MUST trigger
+			const willTrigger = willManageContext({
+				totalTokens: 90000,
+				contextWindow: 100000,
+				maxTokens: 30000,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 100, // user had it cranked to 100
+				profileThresholds: {},
+				currentProfileId: "default",
+				lastMessageTokens: 0,
+			})
+			expect(willTrigger).toBe(true)
+
+			// And manageContext should actually attempt to condense (not just truncate).
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages: [
+					{ role: "user", content: "First message" },
+					{ role: "user", content: "summary", isSummary: true },
+					{ role: "assistant", content: "Last message" },
+				],
+				summary: "summary",
+				cost: 0,
+				newContextTokens: 100,
+			})
+
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "First message" },
+				{ role: "assistant", content: "Second message" },
+				{ role: "user", content: "Third message" },
+				{ role: "assistant", content: "Fourth message" },
+				{ role: "user", content: "" },
+			]
+
+			await manageContext({
+				messages,
+				totalTokens: 90000,
+				contextWindow: 100000,
+				maxTokens: 30000,
+				apiHandler: mockApiHandler,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 100,
+				systemPrompt: "System prompt",
+				taskId,
+				profileThresholds: {},
+				currentProfileId: "default",
+			})
+
+			expect(summarizeSpy).toHaveBeenCalled()
+			summarizeSpy.mockRestore()
+		})
+	})
+
+	/**
+	 * XRoo: tests for the manageContextWithRetry helper. We intentionally mock
+	 * summarizeConversation here so the retry policy can be exercised without
+	 * driving real LLM traffic. The hooks contract is what callers (Task.ts)
+	 * actually depend on, so it's covered first-class.
+	 */
+	describe("XRoo: manageContextWithRetry", () => {
+		const createModelInfo = (contextWindow: number, maxTokens?: number): ModelInfo => ({
+			contextWindow,
+			supportsPromptCache: true,
+			maxTokens,
+		})
+
+		const makeMessages = (): ApiMessage[] => [
+			{ role: "user", content: "First message" },
+			{ role: "assistant", content: "Second message" },
+			{ role: "user", content: "Third message" },
+			{ role: "assistant", content: "Fourth message" },
+			{ role: "user", content: "" },
+		]
+
+		const baseOptions = () => {
+			const modelInfo = createModelInfo(100000, 30000)
+			return {
+				messages: makeMessages(),
+				totalTokens: 60000, // ~85.7% of available input space → above 50% threshold
+				contextWindow: modelInfo.contextWindow,
+				maxTokens: modelInfo.maxTokens,
+				apiHandler: mockApiHandler,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 50,
+				systemPrompt: "System prompt",
+				taskId,
+				profileThresholds: {} as Record<string, number>,
+				currentProfileId: "default",
+			}
+		}
+
+		it("returns immediately on success without firing retry hooks", async () => {
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages: [
+					{ role: "user", content: "First" },
+					{ role: "user", content: "summary", isSummary: true },
+					{ role: "assistant", content: "Last" },
+				],
+				summary: "summary",
+				cost: 0.01,
+				newContextTokens: 100,
+			})
+
+			const onRetryScheduled = vi.fn()
+			const onGaveUp = vi.fn()
+
+			const result = await manageContextWithRetry({
+				...baseOptions(),
+				hooks: { onRetryScheduled, onGaveUp, sleep: vi.fn() },
+			})
+
+			expect(summarizeSpy).toHaveBeenCalledTimes(1)
+			expect(onRetryScheduled).not.toHaveBeenCalled()
+			expect(onGaveUp).not.toHaveBeenCalled()
+			expect(result.summary).toBe("summary")
+			expect(result.error).toBeUndefined()
+			summarizeSpy.mockRestore()
+		})
+
+		it("retries up to maxAttempts and emits onRetryScheduled before each retry", async () => {
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages: makeMessages(),
+				summary: "",
+				cost: 0.001,
+				error: "transient",
+			})
+
+			const sleep = vi.fn().mockResolvedValue(undefined)
+			const onRetryScheduled = vi.fn()
+			const onGaveUp = vi.fn()
+
+			const result = await manageContextWithRetry({
+				...baseOptions(),
+				maxAttempts: 3,
+				retryDelaysMs: [10, 20, 30],
+				hooks: { onRetryScheduled, onGaveUp, sleep },
+			})
+
+			// 3 attempts total → 2 retry-schedule callbacks + 1 give-up callback
+			expect(summarizeSpy).toHaveBeenCalledTimes(3)
+			expect(onRetryScheduled).toHaveBeenCalledTimes(2)
+			expect(onRetryScheduled).toHaveBeenNthCalledWith(1, {
+				attempt: 1,
+				maxAttempts: 3,
+				nextDelayMs: 10,
+				error: "transient",
+			})
+			expect(onRetryScheduled).toHaveBeenNthCalledWith(2, {
+				attempt: 2,
+				maxAttempts: 3,
+				nextDelayMs: 20,
+				error: "transient",
+			})
+			expect(sleep).toHaveBeenCalledTimes(2)
+			expect(sleep).toHaveBeenNthCalledWith(1, 10)
+			expect(sleep).toHaveBeenNthCalledWith(2, 20)
+			expect(onGaveUp).toHaveBeenCalledTimes(1)
+			expect(onGaveUp).toHaveBeenCalledWith({ maxAttempts: 3, error: "transient" })
+			// The final returned result is the last failed attempt (caller can decide what to do).
+			expect(result.error).toBe("transient")
+			summarizeSpy.mockRestore()
+		})
+
+		it("retries after a transient failure and returns the successful result", async () => {
+			const failResponse = {
+				messages: makeMessages(),
+				summary: "",
+				cost: 0.001,
+				error: "rate limit",
+			}
+			const successResponse = {
+				messages: [
+					{ role: "user" as const, content: "First" },
+					{ role: "user" as const, content: "summary-eventually", isSummary: true },
+					{ role: "assistant" as const, content: "Last" },
+				],
+				summary: "summary-eventually",
+				cost: 0.02,
+				newContextTokens: 100,
+			}
+
+			const summarizeSpy = vi
+				.spyOn(condenseModule, "summarizeConversation")
+				.mockResolvedValueOnce(failResponse)
+				.mockResolvedValueOnce(successResponse)
+
+			const onRetryScheduled = vi.fn()
+			const onGaveUp = vi.fn()
+			const sleep = vi.fn().mockResolvedValue(undefined)
+
+			const result = await manageContextWithRetry({
+				...baseOptions(),
+				maxAttempts: 3,
+				retryDelaysMs: [5, 10, 15],
+				hooks: { onRetryScheduled, onGaveUp, sleep },
+			})
+
+			expect(summarizeSpy).toHaveBeenCalledTimes(2)
+			expect(onRetryScheduled).toHaveBeenCalledTimes(1)
+			expect(onRetryScheduled).toHaveBeenCalledWith({
+				attempt: 1,
+				maxAttempts: 3,
+				nextDelayMs: 5,
+				error: "rate limit",
+			})
+			expect(onGaveUp).not.toHaveBeenCalled()
+			expect(result.summary).toBe("summary-eventually")
+			expect(result.error).toBeUndefined()
+			summarizeSpy.mockRestore()
+		})
+
+		it("does NOT retry when manageContext fell back to sliding-window truncation", async () => {
+			// Simulate: summarize fails, AND the underlying manageContext detected
+			// we're over allowedTokens, so it already truncated. The retry wrapper
+			// must NOT loop — the caller has a valid history to send.
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages: makeMessages(),
+				summary: "",
+				cost: 0.001,
+				error: "transient",
+			})
+
+			const onRetryScheduled = vi.fn()
+			const onGaveUp = vi.fn()
+			const sleep = vi.fn().mockResolvedValue(undefined)
+
+			// Push totalTokens above allowedTokens (100000 * 0.9 - 30000 = 60000)
+			// so the sliding-window fallback inside manageContext engages.
+			const result = await manageContextWithRetry({
+				...baseOptions(),
+				totalTokens: 70001,
+				autoCondenseContextPercent: 50,
+				maxAttempts: 3,
+				retryDelaysMs: [5, 10, 15],
+				hooks: { onRetryScheduled, onGaveUp, sleep },
+			})
+
+			expect(summarizeSpy).toHaveBeenCalledTimes(1) // exactly one attempt
+			expect(onRetryScheduled).not.toHaveBeenCalled()
+			expect(onGaveUp).not.toHaveBeenCalled()
+			expect(result.truncationId).toBeDefined() // sliding-window kicked in
+			expect(result.error).toBe("transient")
+			summarizeSpy.mockRestore()
+		})
+
+		it("uses DEFAULT_CONDENSE_MAX_ATTEMPTS when maxAttempts is not provided", async () => {
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages: makeMessages(),
+				summary: "",
+				cost: 0.001,
+				error: "permanent",
+			})
+
+			const onGaveUp = vi.fn()
+			const sleep = vi.fn().mockResolvedValue(undefined)
+
+			await manageContextWithRetry({
+				...baseOptions(),
+				hooks: { onGaveUp, sleep },
+			})
+
+			expect(summarizeSpy).toHaveBeenCalledTimes(DEFAULT_CONDENSE_MAX_ATTEMPTS)
+			expect(onGaveUp).toHaveBeenCalledWith({
+				maxAttempts: DEFAULT_CONDENSE_MAX_ATTEMPTS,
+				error: "permanent",
+			})
+			summarizeSpy.mockRestore()
+		})
+
+		it("normalises maxAttempts <= 0 to a single attempt", async () => {
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages: makeMessages(),
+				summary: "",
+				cost: 0,
+				error: "fail",
+			})
+
+			const sleep = vi.fn().mockResolvedValue(undefined)
+			const onRetryScheduled = vi.fn()
+
+			await manageContextWithRetry({
+				...baseOptions(),
+				maxAttempts: 0,
+				hooks: { sleep, onRetryScheduled },
+			})
+
+			expect(summarizeSpy).toHaveBeenCalledTimes(1)
+			expect(onRetryScheduled).not.toHaveBeenCalled()
+			summarizeSpy.mockRestore()
+		})
+
+		it("falls back to the last entry in retryDelaysMs when attempt index overflows", async () => {
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages: makeMessages(),
+				summary: "",
+				cost: 0,
+				error: "fail",
+			})
+
+			const sleep = vi.fn().mockResolvedValue(undefined)
+			const onRetryScheduled = vi.fn()
+
+			await manageContextWithRetry({
+				...baseOptions(),
+				maxAttempts: 4, // 3 retries needed
+				retryDelaysMs: [10], // only one delay defined
+				hooks: { sleep, onRetryScheduled },
+			})
+
+			// All retry schedules use the single defined delay (10ms).
+			expect(onRetryScheduled).toHaveBeenCalledTimes(3)
+			for (let i = 0; i < 3; i++) {
+				expect(onRetryScheduled.mock.calls[i][0].nextDelayMs).toBe(10)
+			}
+			summarizeSpy.mockRestore()
 		})
 	})
 })

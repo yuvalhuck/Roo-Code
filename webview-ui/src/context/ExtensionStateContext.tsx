@@ -221,7 +221,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		enterBehavior: "send", // Default: Enter sends, Shift+Enter creates newline
 		organizationAllowList: ORGANIZATION_ALLOW_ALL,
 		autoCondenseContext: true,
-		autoCondenseContextPercent: 100,
+		// XRoo: default 75% (was 100%) so condensing fires before model degradation.
+		// Mirrors DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT in src/core/context-management.
+		autoCondenseContextPercent: 75,
 		profileThresholds: {},
 		codebaseIndexConfig: {
 			codebaseIndexEnabled: true,

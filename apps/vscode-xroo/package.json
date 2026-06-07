@@ -1,0 +1,14 @@
+{
+	"name": "@roo-code/vscode-xroo",
+	"description": "XRoo — a community-maintained build of the Roo Code VSCode extension by yuvalhuck.",
+	"private": true,
+	"packageManager": "pnpm@10.8.1",
+	"scripts": {
+		"bundle:xroo": "node esbuild.mjs",
+		"vsix:xroo": "cd build && mkdirp ../../../bin && npx vsce package --no-dependencies --out ../../../bin",
+		"clean": "rimraf build .turbo"
+	},
+	"devDependencies": {
+		"@roo-code/build": "workspace:^"
+	}
+}

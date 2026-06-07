@@ -1,0 +1,22 @@
+{
+	"name": "xroo",
+	"displayName": "XRoo",
+	"version": "0.1.0",
+	"publisher": "yuvalhuck",
+	"//icon": "TODO: replace with custom assets/icons/icon-xroo.png; falls back to the default Roo icon until then.",
+	"icon": "assets/icons/icon.png",
+	"author": {
+		"name": "yuvalhuck",
+		"url": "https://github.com/yuvalhuck"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/yuvalhuck/XRoo"
+	},
+	"homepage": "https://github.com/yuvalhuck/XRoo",
+	"bugs": {
+		"url": "https://github.com/yuvalhuck/XRoo/issues"
+	},
+	"license": "Apache-2.0",
+	"scripts": {}
+}

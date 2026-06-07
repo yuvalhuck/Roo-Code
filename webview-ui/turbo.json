@@ -7,6 +7,9 @@
 		},
 		"build:nightly": {
 			"outputs": ["../apps/vscode-nightly/build/webview-ui/**"]
+		},
+		"build:xroo": {
+			"outputs": ["../apps/vscode-xroo/build/webview-ui/**"]
 		}
 	}
 }

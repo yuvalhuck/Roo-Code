@@ -46,7 +46,13 @@ import { Markdown } from "./Markdown"
 import { CommandExecution } from "./CommandExecution"
 import { CommandExecutionError } from "./CommandExecutionError"
 import { AutoApprovedRequestLimitWarning } from "./AutoApprovedRequestLimitWarning"
-import { InProgressRow, CondensationResultRow, CondensationErrorRow, TruncationResultRow } from "./context-management"
+import {
+	InProgressRow,
+	CondensationResultRow,
+	CondensationErrorRow,
+	CondensationRetryRow,
+	TruncationResultRow,
+} from "./context-management"
 import CodebaseSearchResultsDisplay from "./CodebaseSearchResultsDisplay"
 import { appendImages } from "@src/utils/imageUtils"
 import { McpExecution } from "./McpExecution"
@@ -1357,6 +1363,11 @@ export const ChatRowContent = ({
 					return null
 				case "condense_context_error":
 					return <CondensationErrorRow errorText={message.text} />
+				case "condense_context_retry":
+					// XRoo: emitted between auto-condense retry attempts and also on final
+					// give-up. The component reads attempt/max/delaySeconds/gaveUp out of
+					// the JSON-encoded `text` payload (see CondensationRetryRow).
+					return <CondensationRetryRow text={message.text} />
 				case "sliding_window_truncation":
 					// In-progress state
 					if (message.partial) {

@@ -81,6 +81,19 @@ export default defineConfig(({ mode }) => {
 		define["process.env.PKG_OUTPUT_CHANNEL"] = JSON.stringify("Roo-Code-Nightly")
 	}
 
+	// XRoo branded build (community fork by yuvalhuck).
+	if (mode === "xroo") {
+		outDir = "../apps/vscode-xroo/build/webview-ui/build"
+
+		const xrooPkg = JSON.parse(
+			fs.readFileSync(path.join(__dirname, "..", "apps", "vscode-xroo", "package.xroo.json"), "utf8"),
+		)
+
+		define["process.env.PKG_NAME"] = JSON.stringify(xrooPkg.name)
+		define["process.env.PKG_VERSION"] = JSON.stringify(xrooPkg.version)
+		define["process.env.PKG_OUTPUT_CHANNEL"] = JSON.stringify("XRoo")
+	}
+
 	const plugins: PluginOption[] = [
 		react({
 			babel: {

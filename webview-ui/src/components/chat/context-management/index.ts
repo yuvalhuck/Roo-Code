@@ -10,4 +10,5 @@
 export { InProgressRow } from "./InProgressRow"
 export { CondensationResultRow } from "./CondensationResultRow"
 export { CondensationErrorRow } from "./CondensationErrorRow"
+export { CondensationRetryRow } from "./CondensationRetryRow"
 export { TruncationResultRow } from "./TruncationResultRow"

@@ -1,0 +1,8 @@
+{
+	"extension.displayName": "XRoo",
+	"extension.description": "XRoo — a community-maintained build of the Roo Code agent for VS Code, maintained by yuvalhuck.",
+	"views.contextMenu.label": "XRoo",
+	"views.terminalMenu.label": "XRoo",
+	"views.activitybar.title": "XRoo",
+	"configuration.title": "XRoo"
+}

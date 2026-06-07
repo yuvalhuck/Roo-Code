@@ -1,0 +1,129 @@
+name: XRoo Publish
+
+# Publishes the XRoo-branded community build of the Roo Code extension
+# (maintained by @yuvalhuck) to the VS Code Marketplace and Open VSX.
+#
+# Triggered manually (workflow_dispatch). You may optionally override the
+# version that lands in `apps/vscode-xroo/package.xroo.json` for this run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.0). Leave empty to use the value already in package.xroo.json."
+        required: false
+        type: string
+      publish_vsce:
+        description: "Publish to VS Code Marketplace (requires VSCE_PAT secret)."
+        required: false
+        type: boolean
+        default: true
+      publish_ovsx:
+        description: "Publish to Open VSX Registry (requires OVSX_PAT secret)."
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  publish-xroo:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # Required so we can push the git tag for the release.
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          install-args: "--frozen-lockfile"
+
+      - name: Patch package.xroo.json version (if input provided)
+        if: ${{ inputs.version != '' }}
+        env:
+          XROO_VERSION: ${{ inputs.version }}
+        run: |
+          node <<'EOF'
+            const fs = require('fs');
+            const path = require('path');
+            const pkgPath = path.join(__dirname, 'apps', 'vscode-xroo', 'package.xroo.json');
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            pkg.version = process.env.XROO_VERSION;
+            fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+            console.log(`🔖 XRoo version set to ${pkg.version}`);
+          EOF
+
+      - name: Resolve effective XRoo identity
+        id: identity
+        run: |
+          name=$(node -p "require('./apps/vscode-xroo/package.xroo.json').name")
+          version=$(node -p "require('./apps/vscode-xroo/package.xroo.json').version")
+          publisher=$(node -p "require('./apps/vscode-xroo/package.xroo.json').publisher")
+          echo "name=${name}"           >> $GITHUB_OUTPUT
+          echo "version=${version}"     >> $GITHUB_OUTPUT
+          echo "publisher=${publisher}" >> $GITHUB_OUTPUT
+          echo "vsix=bin/${name}-${version}.vsix" >> $GITHUB_OUTPUT
+
+      - name: Build XRoo VSIX
+        run: pnpm vsix:xroo
+
+      - name: Verify VSIX contents
+        env:
+          VSIX_PATH: ${{ steps.identity.outputs.vsix }}
+        run: |
+          unzip -l "$VSIX_PATH" > /tmp/xroo-vsix-contents.txt
+          grep -q "extension/package.json"                         /tmp/xroo-vsix-contents.txt || exit 1
+          grep -q "extension/package.nls.json"                     /tmp/xroo-vsix-contents.txt || exit 1
+          grep -q "extension/dist/extension.js"                    /tmp/xroo-vsix-contents.txt || exit 1
+          grep -q "extension/webview-ui/audio/celebration.wav"     /tmp/xroo-vsix-contents.txt || exit 1
+          grep -q "extension/webview-ui/build/assets/index.js"     /tmp/xroo-vsix-contents.txt || exit 1
+          grep -q "extension/assets/codicons/codicon.ttf"          /tmp/xroo-vsix-contents.txt || exit 1
+          grep -q "extension/assets/vscode-material-icons/icons/3d.svg" /tmp/xroo-vsix-contents.txt || exit 1
+          rm /tmp/xroo-vsix-contents.txt
+
+      - name: Configure Git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push XRoo Git tag
+        env:
+          XROO_VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          tag="xroo-v${XROO_VERSION}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists; skipping tag push."
+          else
+            git tag -a "$tag" -m "XRoo release v${XROO_VERSION}"
+            git push origin "$tag" --no-verify
+            echo "Successfully pushed git tag $tag"
+          fi
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ inputs.publish_vsce }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSIX_PATH: ${{ steps.identity.outputs.vsix }}
+        run: npx vsce publish --packagePath "$VSIX_PATH"
+
+      - name: Publish to Open VSX Registry
+        if: ${{ inputs.publish_ovsx }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          VSIX_PATH: ${{ steps.identity.outputs.vsix }}
+        run: npx ovsx publish "$VSIX_PATH"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          XROO_VERSION: ${{ steps.identity.outputs.version }}
+          VSIX_PATH: ${{ steps.identity.outputs.vsix }}
+        run: |
+          gh release create "xroo-v${XROO_VERSION}" \
+            --title "XRoo v${XROO_VERSION}" \
+            --notes "Community-maintained XRoo build of Roo Code v$(node -p "require('./src/package.json').version") by @yuvalhuck." \
+            "$VSIX_PATH"

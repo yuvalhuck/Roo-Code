@@ -11,6 +11,7 @@
 		"dev": "vite",
 		"build": "tsc -b && vite build",
 		"build:nightly": "tsc -b && vite build --mode nightly",
+		"build:xroo": "tsc -b && vite build --mode xroo",
 		"preview": "vite preview",
 		"clean": "rimraf ../src/webview-ui ../apps/vscode-nightly/build/webview-ui tsconfig.tsbuildinfo .turbo"
 	},

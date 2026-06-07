@@ -80,6 +80,7 @@ import { ContextProxy } from "../config/ContextProxy"
 import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
 import { CustomModesManager } from "../config/CustomModesManager"
 import { Task } from "../task/Task"
+import { DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT } from "../context-management"
 
 import { webviewMessageHandler } from "./webviewMessageHandler"
 import type { ClineMessage, TodoItem } from "@roo-code/types"
@@ -2022,7 +2023,8 @@ export class ClineProvider
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext: autoCondenseContext ?? true,
-			autoCondenseContextPercent: autoCondenseContextPercent ?? 100,
+			// XRoo: default 75% (was 100%) so condensing fires before model degradation.
+			autoCondenseContextPercent: autoCondenseContextPercent ?? DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT,
 			uriScheme: vscode.env.uriScheme,
 			currentTaskId: currentTask?.taskId,
 			currentTaskItem: currentTask?.taskId ? this.taskHistoryStore.get(currentTask.taskId) : undefined,
@@ -2172,7 +2174,8 @@ export class ClineProvider
 			allowedMaxRequests: stateValues.allowedMaxRequests,
 			allowedMaxCost: stateValues.allowedMaxCost,
 			autoCondenseContext: stateValues.autoCondenseContext ?? true,
-			autoCondenseContextPercent: stateValues.autoCondenseContextPercent ?? 100,
+			// XRoo: default 75% (was 100%) so condensing fires before model degradation.
+			autoCondenseContextPercent: stateValues.autoCondenseContextPercent ?? DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT,
 			taskHistory: this.taskHistoryStore.getAll(),
 			allowedCommands: stateValues.allowedCommands,
 			deniedCommands: stateValues.deniedCommands,

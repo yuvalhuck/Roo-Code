@@ -24,6 +24,56 @@ import { RooIgnoreController } from "../ignore/RooIgnoreController"
 export const TOKEN_BUFFER_PERCENTAGE = 0.1
 
 /**
+ * Computes the percentage of "available input space" currently used.
+ *
+ * Available input space = contextWindow - reservedForOutput. This is the same
+ * denominator the UI uses to render the percentage shown in the task header
+ * (see {@link webview-ui/src/components/chat/TaskHeader.tsx}). Aligning the
+ * trigger math with the UI means a user-configured threshold of `N%` fires
+ * exactly when the UI shows `N%`. The result is clamped so callers can safely
+ * compare against thresholds in `[0, 100]` without worrying about negative
+ * denominators on misconfigured models.
+ *
+ * XRoo product decision: "100% is the black line" — we never let the trigger
+ * threshold go above 100% of available input space. Any saved user config
+ * higher than 100 is silently clamped to 100 when used.
+ */
+export function computeContextUsagePercent(
+	contextTokens: number,
+	contextWindow: number,
+	reservedForOutput: number,
+): number {
+	const availableInputSpace = contextWindow - reservedForOutput
+	if (availableInputSpace <= 0) {
+		return 0
+	}
+	return (100 * contextTokens) / availableInputSpace
+}
+
+/**
+ * XRoo: Hard upper bound on the configurable auto-condense trigger threshold.
+ * Even if a user has a saved profile threshold above this, we clamp it down
+ * at decision time. 100% of available input space is the "black line" — past
+ * this point the next API call risks spilling into the reply budget and
+ * degrading model quality, so we always trigger condensing at or below 100.
+ */
+export const ABSOLUTE_MAX_CONDENSE_THRESHOLD = 100
+
+/**
+ * XRoo: Default auto-condense threshold (% of available input space).
+ *
+ * Set to 75 so condensing fires well before the model crosses the soft
+ * degradation cliff that typically lives around 80–90% of the usable context.
+ * The previous upstream default of 100 effectively meant "never auto-condense
+ * until the API call is about to fail", which is what caused models like
+ * Claude Opus to silently stop using tools when the conversation got long.
+ *
+ * Users can still configure any value in [MIN_CONDENSE_THRESHOLD,
+ * ABSOLUTE_MAX_CONDENSE_THRESHOLD] via Settings or per-profile thresholds.
+ */
+export const DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT = 75
+
+/**
  * Counts tokens for user content using the provider's token counting implementation.
  *
  * @param {Array<Anthropic.Messages.ContentBlockParam>} content - The content to count tokens for
@@ -154,6 +204,39 @@ export type WillManageContextOptions = {
  * @param {WillManageContextOptions} options - The options for threshold calculation
  * @returns {boolean} True if context management will likely run, false otherwise
  */
+/**
+ * XRoo: Resolves the threshold the auto-condense logic should compare against.
+ *
+ * - Profiles can override the global setting; `-1` means "inherit".
+ * - Invalid profile values fall back to the global setting and emit a warning.
+ * - The final value is always clamped to {@link ABSOLUTE_MAX_CONDENSE_THRESHOLD}
+ *   (100). The UI shows the user's saved value as-is, but the *actual* trigger
+ *   never goes above 100%. This protects users who, before the trigger-math
+ *   fix, had cranked the slider all the way up to 100 and were silently
+ *   running with no auto-condense at all once the new math kicks in.
+ */
+export function resolveEffectiveCondenseThreshold(
+	autoCondenseContextPercent: number,
+	profileThresholds: Record<string, number>,
+	currentProfileId: string,
+): number {
+	let effectiveThreshold = autoCondenseContextPercent
+	const profileThreshold = profileThresholds[currentProfileId]
+	if (profileThreshold !== undefined) {
+		if (profileThreshold === -1) {
+			effectiveThreshold = autoCondenseContextPercent
+		} else if (profileThreshold >= MIN_CONDENSE_THRESHOLD && profileThreshold <= MAX_CONDENSE_THRESHOLD) {
+			effectiveThreshold = profileThreshold
+		} else {
+			console.warn(
+				`Invalid profile threshold ${profileThreshold} for profile "${currentProfileId}". Using global default of ${autoCondenseContextPercent}%`,
+			)
+		}
+	}
+	// XRoo: Clamp to absolute max — "100% is the black line".
+	return Math.min(effectiveThreshold, ABSOLUTE_MAX_CONDENSE_THRESHOLD)
+}
+
 export function willManageContext({
 	totalTokens,
 	contextWindow,
@@ -164,31 +247,24 @@ export function willManageContext({
 	currentProfileId,
 	lastMessageTokens,
 }: WillManageContextOptions): boolean {
-	if (!autoCondenseContext) {
-		// When auto-condense is disabled, only truncation can occur
-		const reservedTokens = maxTokens || ANTHROPIC_DEFAULT_MAX_TOKENS
-		const prevContextTokens = totalTokens + lastMessageTokens
-		const allowedTokens = contextWindow * (1 - TOKEN_BUFFER_PERCENTAGE) - reservedTokens
-		return prevContextTokens > allowedTokens
-	}
-
 	const reservedTokens = maxTokens || ANTHROPIC_DEFAULT_MAX_TOKENS
 	const prevContextTokens = totalTokens + lastMessageTokens
 	const allowedTokens = contextWindow * (1 - TOKEN_BUFFER_PERCENTAGE) - reservedTokens
 
-	// Determine the effective threshold to use
-	let effectiveThreshold = autoCondenseContextPercent
-	const profileThreshold = profileThresholds[currentProfileId]
-	if (profileThreshold !== undefined) {
-		if (profileThreshold === -1) {
-			effectiveThreshold = autoCondenseContextPercent
-		} else if (profileThreshold >= MIN_CONDENSE_THRESHOLD && profileThreshold <= MAX_CONDENSE_THRESHOLD) {
-			effectiveThreshold = profileThreshold
-		}
-		// Invalid values fall back to global setting (effectiveThreshold already set)
+	if (!autoCondenseContext) {
+		// When auto-condense is disabled, only sliding-window truncation can occur
+		return prevContextTokens > allowedTokens
 	}
 
-	const contextPercent = (100 * prevContextTokens) / contextWindow
+	const effectiveThreshold = resolveEffectiveCondenseThreshold(
+		autoCondenseContextPercent,
+		profileThresholds,
+		currentProfileId,
+	)
+
+	// XRoo: Use available-input-space as the denominator so the threshold the
+	// user sets in Settings matches the percentage shown in the task header.
+	const contextPercent = computeContextUsagePercent(prevContextTokens, contextWindow, reservedTokens)
 	return contextPercent >= effectiveThreshold || prevContextTokens > allowedTokens
 }
 
@@ -232,6 +308,136 @@ export type ContextManagementResult = SummarizeResponse & {
 	truncationId?: string
 	messagesRemoved?: number
 	newContextTokensAfterTruncation?: number
+}
+
+/**
+ * XRoo: Default policy for retrying a failed auto-condense before giving up
+ * and letting the sliding-window fallback engage.
+ *
+ * Rationale: the condense call is itself a small LLM request and can fail for
+ * transient reasons (rate limits, 5xx, network blips). Without a retry, a
+ * single bad request would silently degrade the user to truncation right at
+ * the moment they need a clean context most. Three attempts with linear
+ * backoff (1s, 2s, 3s) keeps the worst-case delay under 10s, which is well
+ * inside the user's mental model of "waiting for the model to think".
+ */
+export const DEFAULT_CONDENSE_MAX_ATTEMPTS = 3
+
+/** Per-attempt backoff (in ms) — index 0 is "before retry #1". */
+export const DEFAULT_CONDENSE_RETRY_DELAYS_MS = [1000, 2000, 3000] as const
+
+/**
+ * XRoo: Callbacks invoked by {@link manageContextWithRetry} so the caller
+ * (Task) can surface progress in the chat without this module knowing about
+ * say/ask infrastructure. Keeps the retry logic testable in isolation.
+ */
+export type ManageContextRetryHooks = {
+	/**
+	 * Invoked AFTER a condense attempt failed and BEFORE the backoff sleep.
+	 * `delayMs` is the upcoming delay; UIs should render a countdown.
+	 */
+	onRetryScheduled?: (info: {
+		attempt: number // 1-based — the attempt that just failed
+		maxAttempts: number
+		nextDelayMs: number
+		error?: string
+	}) => Promise<void> | void
+
+	/**
+	 * Invoked once all attempts have failed. After this fires, the helper
+	 * returns the *last* failed `ContextManagementResult` to the caller, which
+	 * lets `manageContext`'s built-in sliding-window fallback take over on the
+	 * next invocation if the user keeps the task running.
+	 */
+	onGaveUp?: (info: { maxAttempts: number; error?: string }) => Promise<void> | void
+
+	/**
+	 * Optional sleep override for tests. Defaults to a real `setTimeout`.
+	 */
+	sleep?: (ms: number) => Promise<void>
+}
+
+export type ManageContextWithRetryOptions = ContextManagementOptions & {
+	maxAttempts?: number
+	retryDelaysMs?: readonly number[]
+	hooks?: ManageContextRetryHooks
+}
+
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * XRoo: Wraps {@link manageContext} with a small retry loop for the condense
+ * step. The wrapper:
+ *
+ *  1. Calls `manageContext` normally.
+ *  2. If the result indicates a *condense* failure (i.e. `error` is set AND
+ *     no successful `summary` was produced AND the sliding-window fallback
+ *     did NOT engage), it waits and retries up to `maxAttempts - 1` times.
+ *  3. Emits `hooks.onRetryScheduled` between attempts and `hooks.onGaveUp`
+ *     after the last failure so the chat can show progress.
+ *
+ * The function is intentionally a thin layer over `manageContext` so the
+ * existing fallback behavior (truncate on overflow) keeps working unchanged.
+ *
+ * NOTE on truncation: if `manageContext` returns `error` AND ALSO truncated
+ * via sliding-window (`truncationId` set), we treat that as "the safety net
+ * already kicked in" and do NOT retry — retrying would just thrash, and the
+ * caller already has a valid (truncated) `messages` array to send.
+ */
+export async function manageContextWithRetry(options: ManageContextWithRetryOptions): Promise<ContextManagementResult> {
+	const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_CONDENSE_MAX_ATTEMPTS)
+	const delays = options.retryDelaysMs ?? DEFAULT_CONDENSE_RETRY_DELAYS_MS
+	const sleep = options.hooks?.sleep ?? realSleep
+
+	// Pull the retry-only fields off so we can forward the rest to manageContext.
+	const { maxAttempts: _ma, retryDelaysMs: _rd, hooks: _hk, ...baseOptions } = options
+
+	let lastResult: ContextManagementResult | undefined
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		const result = await manageContext(baseOptions)
+		lastResult = result
+
+		// Success path: either condensing produced a summary, OR the caller
+		// has auto-condense disabled / context is fine and nothing happened.
+		// In both cases there's nothing to retry.
+		if (!result.error) {
+			return result
+		}
+
+		// The sliding-window safety net already activated — don't retry,
+		// the caller has a valid truncated history to use.
+		if (result.truncationId) {
+			return result
+		}
+
+		// We failed and there's still attempts left → schedule a retry.
+		if (attempt < maxAttempts) {
+			const nextDelayMs = delays[Math.min(attempt - 1, delays.length - 1)] ?? 1000
+			await options.hooks?.onRetryScheduled?.({
+				attempt,
+				maxAttempts,
+				nextDelayMs,
+				error: result.error,
+			})
+			await sleep(nextDelayMs)
+			continue
+		}
+
+		// Out of attempts — surface the give-up and return the last failure.
+		await options.hooks?.onGaveUp?.({ maxAttempts, error: result.error })
+	}
+
+	// Defensive: lastResult is always set because we run at least one attempt.
+	return (
+		lastResult ?? {
+			messages: options.messages,
+			summary: "",
+			cost: 0,
+			prevContextTokens: options.totalTokens,
+			error: "manageContextWithRetry: no attempts were run",
+		}
+	)
 }
 
 /**
@@ -279,28 +485,19 @@ export async function manageContext({
 	// Truncate if we're within TOKEN_BUFFER_PERCENTAGE of the context window
 	const allowedTokens = contextWindow * (1 - TOKEN_BUFFER_PERCENTAGE) - reservedTokens
 
-	// Determine the effective threshold to use
-	let effectiveThreshold = autoCondenseContextPercent
-	const profileThreshold = profileThresholds[currentProfileId]
-	if (profileThreshold !== undefined) {
-		if (profileThreshold === -1) {
-			// Special case: -1 means inherit from global setting
-			effectiveThreshold = autoCondenseContextPercent
-		} else if (profileThreshold >= MIN_CONDENSE_THRESHOLD && profileThreshold <= MAX_CONDENSE_THRESHOLD) {
-			// Valid custom threshold
-			effectiveThreshold = profileThreshold
-		} else {
-			// Invalid threshold value, fall back to global setting
-			console.warn(
-				`Invalid profile threshold ${profileThreshold} for profile "${currentProfileId}". Using global default of ${autoCondenseContextPercent}%`,
-			)
-			effectiveThreshold = autoCondenseContextPercent
-		}
-	}
-	// If no specific threshold is found for the profile, fall back to global setting
+	// XRoo: Use the shared helper so the threshold resolution + clamp behavior
+	// is identical between willManageContext (UI/UX check) and manageContext
+	// (the actual trigger).
+	const effectiveThreshold = resolveEffectiveCondenseThreshold(
+		autoCondenseContextPercent,
+		profileThresholds,
+		currentProfileId,
+	)
 
 	if (autoCondenseContext) {
-		const contextPercent = (100 * prevContextTokens) / contextWindow
+		// XRoo: Use available-input-space as the denominator so a threshold of
+		// `N%` fires when the task header shows `N%`. See computeContextUsagePercent.
+		const contextPercent = computeContextUsagePercent(prevContextTokens, contextWindow, reservedTokens)
 		if (contextPercent >= effectiveThreshold || prevContextTokens > allowedTokens) {
 			// Attempt to intelligently condense the context
 			const result = await summarizeConversation({

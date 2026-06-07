@@ -1252,6 +1252,34 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		return indices
 	}, [groupedMessages])
 
+	/**
+	 * XRoo: Derive whether the sliding-window fallback is *currently* the
+	 * active context-management state. This drives the warning indicator
+	 * rendered under the text area (Step C of the FORK-XROO plan).
+	 *
+	 * The flag is true when the most recent context-management event for the
+	 * current task is a `sliding_window_truncation` (i.e. condensing failed
+	 * or was disabled and we had to fall back to destructive-looking
+	 * truncation). It flips back to false as soon as a successful
+	 * `condense_context` say arrives — meaning the user recovered, either
+	 * via auto-condense or by clicking "Clean Context".
+	 */
+	const slidingWindowActive = useMemo(() => {
+		// Walk visibleMessages from newest to oldest looking for whichever
+		// context-management event happened most recently.
+		for (let i = visibleMessages.length - 1; i >= 0; i--) {
+			const msg = visibleMessages[i]
+			if (msg.say === "sliding_window_truncation" && !msg.partial) {
+				return true
+			}
+			if (msg.say === "condense_context" && !msg.partial && msg.contextCondense) {
+				// A successful condense after any prior truncation means we recovered.
+				return false
+			}
+		}
+		return false
+	}, [visibleMessages])
+
 	const hasLatestCheckpoint = checkpointIndices.length > 0
 	const checkpointJumpCursorRef = useRef<number | null>(null)
 
@@ -1784,6 +1812,23 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				isStreaming={isStreaming}
 				onStop={handleStopTask}
 				onEnqueueMessage={handleEnqueueCurrentMessage}
+				/*
+				 * XRoo: surface "Clean Context" right under the user input.
+				 * - Only shown when a task is active (`currentTaskItem?.id`).
+				 * - Disabled while a condense is already running or the user is mid-send,
+				 *   so we can never double-trigger or fight an in-flight request.
+				 */
+				canCleanContext={!!currentTaskItem?.id}
+				cleanContextDisabled={isCondensing || sendingDisabled}
+				onCleanContext={currentTaskItem?.id ? () => handleCondenseContext(currentTaskItem.id) : undefined}
+				/*
+				 * XRoo (Step C): When the sliding-window fallback is the current
+				 * state (i.e. auto-condense gave up and older messages are being
+				 * trimmed without summarization), render a warning row directly
+				 * above the input action cluster. Clicking it triggers a manual
+				 * condense to recover quality.
+				 */
+				slidingWindowActive={slidingWindowActive && !!currentTaskItem?.id}
 			/>
 
 			{isProfileDisabled && (

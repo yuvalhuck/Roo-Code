@@ -201,17 +201,24 @@
 	},
 	"contextManagement": {
 		"tokens": "tokens",
+		"cleanContextButton": "Clean Context",
+		"cleanContextTooltip": "Condense the conversation now to recover context window space",
 		"condensation": {
 			"title": "Context Condensed",
 			"inProgress": "Condensing context...",
-			"errorHeader": "Failed to condense context"
+			"errorHeader": "Failed to condense context",
+			"retryHeader": "Retrying context condensation",
+			"retryMessage": "Attempt {{attempt}} of {{max}} — retrying in {{seconds}}s",
+			"retryGaveUp": "Auto-condense failed after {{max}} attempts. Falling back to sliding-window truncation."
 		},
 		"truncation": {
 			"title": "Context Truncated",
 			"inProgress": "Truncating context...",
 			"messagesRemoved": "{{count}} message removed",
 			"messagesRemoved_other": "{{count}} messages removed",
-			"description": "Older messages were removed from the conversation to stay within the context window limit. This is a fast but less context-preserving approach compared to condensation."
+			"description": "Older messages were removed from the conversation to stay within the context window limit. This is a fast but less context-preserving approach compared to condensation.",
+			"slidingWindowActive": "Sliding-window truncation is active — older context is being trimmed.",
+			"slidingWindowHint": "Click \"Clean Context\" to manually condense and recover quality."
 		}
 	},
 	"skill": {

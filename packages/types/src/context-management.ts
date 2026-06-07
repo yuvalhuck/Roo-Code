@@ -7,7 +7,8 @@
  *
  * Event Types:
  * - `condense_context`: Context was condensed using AI summarization
- * - `condense_context_error`: An error occurred during context condensation
+ * - `condense_context_error`: An error occurred during context condensation (terminal)
+ * - `condense_context_retry`: XRoo: A condense attempt failed and we are retrying with backoff
  * - `sliding_window_truncation`: Context was truncated using sliding window strategy
  */
 
@@ -18,6 +19,7 @@
 export const CONTEXT_MANAGEMENT_EVENTS = [
 	"condense_context",
 	"condense_context_error",
+	"condense_context_retry",
 	"sliding_window_truncation",
 ] as const
 

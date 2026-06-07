@@ -1,7 +1,7 @@
 import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useEvent } from "react-use"
 import DynamicTextArea from "react-textarea-autosize"
-import { VolumeX, Image, WandSparkles, SendHorizontal, X, ListEnd, Square } from "lucide-react"
+import { VolumeX, Image, WandSparkles, SendHorizontal, X, ListEnd, Square, FoldVertical } from "lucide-react"
 
 import type { ExtensionMessage } from "@roo-code/types"
 
@@ -55,6 +55,17 @@ interface ChatTextAreaProps {
 	isStreaming?: boolean
 	onStop?: () => void
 	onEnqueueMessage?: () => void
+	// XRoo: Manual "Clean Context" affordance shown directly under the text area.
+	// Only rendered when `canCleanContext` is true (i.e. a task is currently
+	// active). Falls back to no button at all in the welcome / empty state.
+	canCleanContext?: boolean
+	cleanContextDisabled?: boolean
+	onCleanContext?: () => void
+	// XRoo: When the sliding-window fallback is currently the active context-
+	// management strategy (auto-condense failed / disabled), we show a warning
+	// row right above the action cluster so the user knows quality may be
+	// degraded and can click "Clean Context" to recover.
+	slidingWindowActive?: boolean
 }
 
 export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
@@ -78,6 +89,10 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			isStreaming = false,
 			onStop,
 			onEnqueueMessage,
+			canCleanContext = false,
+			cleanContextDisabled = false,
+			onCleanContext,
+			slidingWindowActive = false,
 		},
 		ref,
 	) => {
@@ -1294,6 +1309,46 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 					/>
 				)}
 
+				{/*
+				 * XRoo (Step C): Sliding-window-active warning row. Rendered just
+				 * above the action cluster so the user can correlate it with the
+				 * "Clean Context" button they will click to recover. Self-hides
+				 * when the user has nowhere to dispatch the recovery (no task /
+				 * no onCleanContext handler), making the component safe to render
+				 * unconditionally from the parent.
+				 */}
+				{slidingWindowActive && (
+					<button
+						type="button"
+						data-testid="sliding-window-active-indicator"
+						aria-label={t("chat:contextManagement.truncation.slidingWindowActive")}
+						onClick={onCleanContext && !cleanContextDisabled ? () => onCleanContext() : undefined}
+						disabled={!onCleanContext || cleanContextDisabled}
+						className={cn(
+							"mx-1 my-1 flex items-start gap-2 text-left",
+							"rounded-md px-2 py-1.5",
+							"bg-vscode-inputValidation-warningBackground/40",
+							"border border-vscode-inputValidation-warningBorder",
+							"text-vscode-inputValidation-warningForeground text-xs",
+							"transition-colors duration-150",
+							onCleanContext && !cleanContextDisabled
+								? "cursor-pointer hover:bg-vscode-inputValidation-warningBackground/70"
+								: "cursor-default opacity-70",
+						)}>
+						<span className="codicon codicon-warning mt-0.5 text-base shrink-0" aria-hidden="true" />
+						<span className="flex-1">
+							<span className="block font-medium">
+								{t("chat:contextManagement.truncation.slidingWindowActive")}
+							</span>
+							{onCleanContext && (
+								<span className="block opacity-80">
+									{t("chat:contextManagement.truncation.slidingWindowHint")}
+								</span>
+							)}
+						</span>
+					</button>
+				)}
+
 				<div className="flex items-center gap-2">
 					<div className="flex items-center gap-2 min-w-0 overflow-clip flex-1">
 						<ModeSelector
@@ -1321,6 +1376,44 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 						<AutoApproveDropdown triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink" />
 					</div>
 					<div className={cn("flex flex-shrink-0 items-center gap-0.5 h-5 leading-none", "pr-2")}>
+						{/*
+						 * XRoo: "Clean Context" button — moved out of the (well-hidden) TaskHeader
+						 * expand-section into the always-visible action row so users can actually
+						 * find it. Only shown when there is an active task (canCleanContext = true).
+						 * The label is intentionally a real word ("Clean Context") rather than just
+						 * an icon, because user feedback was "NO ONE familiar with the context
+						 * clean button" — the previous icon-only affordance was undiscoverable.
+						 */}
+						{canCleanContext && onCleanContext && (
+							<StandardTooltip content={t("chat:contextManagement.cleanContextTooltip")}>
+								<button
+									type="button"
+									aria-label={t("chat:contextManagement.cleanContextButton")}
+									data-testid="clean-context-button"
+									onClick={() => {
+										if (!cleanContextDisabled) onCleanContext()
+									}}
+									disabled={cleanContextDisabled}
+									className={cn(
+										"relative inline-flex items-center justify-center gap-1",
+										"bg-transparent border-none px-2 py-1",
+										"rounded-md min-h-[28px]",
+										"text-vscode-foreground opacity-85",
+										"text-xs font-medium",
+										"transition-all duration-150",
+										"focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
+										"active:bg-[rgba(255,255,255,0.1)]",
+										!cleanContextDisabled &&
+											"cursor-pointer hover:opacity-100 hover:bg-[rgba(255,255,255,0.05)]",
+										cleanContextDisabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
+									)}>
+									<FoldVertical className="size-3.5" />
+									<span className="hidden sm:inline">
+										{t("chat:contextManagement.cleanContextButton")}
+									</span>
+								</button>
+							</StandardTooltip>
+						)}
 						{isTtsPlaying && (
 							<StandardTooltip content={t("chat:stopTts")}>
 								<button

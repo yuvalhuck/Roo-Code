@@ -8,6 +8,9 @@ const autoYes = process.argv.includes("-y")
 // detect nightly flag
 const isNightly = process.argv.includes("--nightly")
 
+// detect xroo flag (community fork build)
+const isXroo = process.argv.includes("--xroo")
+
 // detect editor command from args or default to "code"
 const editorArg = process.argv.find((arg) => arg.startsWith("--editor="))
 const defaultEditor = editorArg ? editorArg.split("=")[1] : "code"
@@ -29,7 +32,14 @@ async function main() {
 	try {
 		let name, version, publisher
 
-		if (isNightly) {
+		if (isXroo) {
+			// For the XRoo community fork build, identity comes entirely from the
+			// xroo override package.json (name, version, AND publisher).
+			const xrooPackageJson = JSON.parse(fs.readFileSync("./apps/vscode-xroo/package.xroo.json", "utf-8"))
+			name = xrooPackageJson.name
+			version = xrooPackageJson.version
+			publisher = xrooPackageJson.publisher
+		} else if (isNightly) {
 			// For nightly, read the nightly-specific package.json and get publisher from src
 			const nightlyPackageJson = JSON.parse(
 				fs.readFileSync("./apps/vscode-nightly/package.nightly.json", "utf-8"),
@@ -47,12 +57,13 @@ async function main() {
 
 		const vsixFileName = `./bin/${name}-${version}.vsix`
 		const extensionId = `${publisher}.${name}`
-		const buildType = isNightly ? "Nightly" : "Regular"
+		const buildType = isXroo ? "XRoo" : isNightly ? "Nightly" : "Regular"
 
-		console.log(`\n🚀 Roo Code VSIX Installer (${buildType})`)
+		const productLabel = isXroo ? "XRoo" : "Roo Code"
+		console.log(`\n🚀 ${productLabel} VSIX Installer (${buildType})`)
 		console.log("========================")
 		console.log("\nThis script will:")
-		console.log("1. Uninstall any existing version of the Roo Code extension")
+		console.log(`1. Uninstall any existing version of the ${productLabel} extension`)
 		console.log("2. Install the newly built VSIX package")
 		console.log(`\nExtension: ${extensionId}`)
 		console.log(`VSIX file: ${vsixFileName}`)

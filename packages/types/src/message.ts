@@ -137,7 +137,8 @@ export function isNonBlockingAsk(ask: ClineAsk): ask is NonBlockingAsk {
  * - `rooignore_error`: Error related to .rooignore file processing
  * - `diff_error`: Error occurred while applying a diff/patch
  * - `condense_context`: Context condensation/summarization has started
- * - `condense_context_error`: Error occurred during context condensation
+ * - `condense_context_error`: Error occurred during context condensation (terminal — retries exhausted or non-retriable)
+ * - `condense_context_retry`: XRoo: A condense attempt failed and a retry is scheduled / in progress
  * - `codebase_search_result`: Results from searching the codebase
  * - `too_many_tools_warning`: Warning that too many MCP tools are enabled, which may confuse the LLM
  */
@@ -165,6 +166,7 @@ export const clineSays = [
 	"diff_error",
 	"condense_context",
 	"condense_context_error",
+	"condense_context_retry",
 	"sliding_window_truncation",
 	"codebase_search_result",
 	"user_edit_todos",

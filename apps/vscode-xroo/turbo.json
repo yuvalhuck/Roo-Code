@@ -1,0 +1,15 @@
+{
+	"$schema": "https://turbo.build/schema.json",
+	"extends": ["//"],
+	"tasks": {
+		"bundle:xroo": {
+			"dependsOn": ["^build", "@roo-code/vscode-webview#build:xroo"],
+			"outputs": ["build/**"]
+		},
+		"vsix:xroo": {
+			"dependsOn": ["bundle:xroo"],
+			"inputs": ["build/**"],
+			"outputs": ["../../../bin/**"]
+		}
+	}
+}

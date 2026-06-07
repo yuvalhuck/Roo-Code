@@ -100,7 +100,12 @@ import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { RooProtectedController } from "../protect/RooProtectedController"
 import { type AssistantMessageContent, presentAssistantMessage } from "../assistant-message"
 import { NativeToolCallParser } from "../assistant-message/NativeToolCallParser"
-import { manageContext, willManageContext } from "../context-management"
+import {
+	manageContextWithRetry,
+	willManageContext,
+	DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT,
+	DEFAULT_CONDENSE_MAX_ATTEMPTS,
+} from "../context-management"
 import { ClineProvider } from "../webview/ClineProvider"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import {
@@ -3776,8 +3781,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Generate environment details to include in the condensed summary
 			const environmentDetails = await getEnvironmentDetails(this, true)
 
-			// Force aggressive truncation by keeping only 75% of the conversation history
-			const truncateResult = await manageContext({
+			// Force aggressive truncation by keeping only 75% of the conversation history.
+			// XRoo: use the retry wrapper so a transient failure on the recovery
+			// condense doesn't immediately demote us to sliding-window — this
+			// path is reached only after the model already over-spilled once.
+			const truncateResult = await manageContextWithRetry({
 				messages: this.apiConversationHistory,
 				totalTokens: contextTokens || 0,
 				maxTokens,
@@ -3791,6 +3799,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				currentProfileId,
 				metadata,
 				environmentDetails,
+				hooks: {
+					onRetryScheduled: async ({ attempt, maxAttempts, nextDelayMs, error }) => {
+						await this.say(
+							"condense_context_retry",
+							JSON.stringify({
+								attempt,
+								max: maxAttempts,
+								delaySeconds: Math.ceil(nextDelayMs / 1000),
+								error,
+							}),
+						)
+					},
+					onGaveUp: async ({ maxAttempts, error }) => {
+						await this.say(
+							"condense_context_retry",
+							JSON.stringify({ attempt: maxAttempts, max: maxAttempts, gaveUp: true, error }),
+						)
+					},
+				},
+				maxAttempts: DEFAULT_CONDENSE_MAX_ATTEMPTS,
 			})
 
 			if (truncateResult.messages !== this.apiConversationHistory) {
@@ -3885,7 +3913,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			requestDelaySeconds,
 			mode,
 			autoCondenseContext = true,
-			autoCondenseContextPercent = 100,
+			// XRoo: default 75% (was 100%) so condensing fires before model degradation.
+			autoCondenseContextPercent = DEFAULT_AUTO_CONDENSE_CONTEXT_PERCENT,
 			profileThresholds = {},
 		} = state ?? {}
 
@@ -4001,7 +4030,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					: undefined
 
 			try {
-				const truncateResult = await manageContext({
+				// XRoo: wrap manageContext in a small retry loop so transient
+				// condense failures (rate limits, 5xx, network blips) don't
+				// silently drop us into sliding-window truncation. Each retry
+				// emits a `condense_context_retry` say so the user can see what
+				// is happening in chat, mirroring how api_req retries are surfaced.
+				const truncateResult = await manageContextWithRetry({
 					messages: this.apiConversationHistory,
 					totalTokens: contextTokens,
 					maxTokens,
@@ -4019,6 +4053,34 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					filesReadByRoo: contextMgmtFilesReadByRoo,
 					cwd: this.cwd,
 					rooIgnoreController: this.rooIgnoreController,
+					hooks: {
+						onRetryScheduled: async ({ attempt, maxAttempts, nextDelayMs, error }) => {
+							// Encode as JSON so the webview row can render a
+							// localized "Attempt N of M — retrying in Ks" string
+							// without us shipping translated text from the host.
+							await this.say(
+								"condense_context_retry",
+								JSON.stringify({
+									attempt,
+									max: maxAttempts,
+									delaySeconds: Math.ceil(nextDelayMs / 1000),
+									error,
+								}),
+							)
+						},
+						onGaveUp: async ({ maxAttempts, error }) => {
+							await this.say(
+								"condense_context_retry",
+								JSON.stringify({
+									attempt: maxAttempts,
+									max: maxAttempts,
+									gaveUp: true,
+									error,
+								}),
+							)
+						},
+					},
+					maxAttempts: DEFAULT_CONDENSE_MAX_ATTEMPTS,
 				})
 				if (truncateResult.messages !== this.apiConversationHistory) {
 					await this.overwriteApiConversationHistory(truncateResult.messages)

@@ -6,8 +6,9 @@ describe("context-management", () => {
 		it("should contain all expected event types", () => {
 			expect(CONTEXT_MANAGEMENT_EVENTS).toContain("condense_context")
 			expect(CONTEXT_MANAGEMENT_EVENTS).toContain("condense_context_error")
+			expect(CONTEXT_MANAGEMENT_EVENTS).toContain("condense_context_retry")
 			expect(CONTEXT_MANAGEMENT_EVENTS).toContain("sliding_window_truncation")
-			expect(CONTEXT_MANAGEMENT_EVENTS).toHaveLength(3)
+			expect(CONTEXT_MANAGEMENT_EVENTS).toHaveLength(4)
 		})
 	})
 
@@ -15,6 +16,7 @@ describe("context-management", () => {
 		it("should return true for valid context management events", () => {
 			expect(isContextManagementEvent("condense_context")).toBe(true)
 			expect(isContextManagementEvent("condense_context_error")).toBe(true)
+			expect(isContextManagementEvent("condense_context_retry")).toBe(true)
 			expect(isContextManagementEvent("sliding_window_truncation")).toBe(true)
 		})
 
